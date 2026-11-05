@@ -12,6 +12,7 @@ import { HealthModule } from "./health/health.module.js";
 import { InventoryModule } from "./inventory/inventory.module.js";
 import { CrmModule } from "./crm/crm.module.js";
 import { SalesModule } from "./sales/sales.module.js";
+import { DashboardModule } from "./dashboard/dashboard.module.js";
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -39,6 +40,7 @@ const EnvSchema = z.object({
     InventoryModule,
     CrmModule,
     SalesModule,
+    DashboardModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
