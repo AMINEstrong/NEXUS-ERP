@@ -1,0 +1,25 @@
+{
+  "name": "nexus-erp",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @nexus/api --filter @nexus/web dev",
+    "dev:api": "pnpm --filter @nexus/api dev",
+    "dev:web": "pnpm --filter @nexus/web dev",
+    "build": "pnpm -r --workspace-concurrency=1 build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @nexus/api db:generate",
+    "db:migrate": "pnpm --filter @nexus/api db:migrate",
+    "db:deploy": "pnpm --filter @nexus/api db:deploy",
+    "db:seed": "pnpm --filter @nexus/api db:seed",
+    "db:studio": "pnpm --filter @nexus/api db:studio",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down",
+    "infra:logs": "docker compose logs -f postgres redis"
+  }
+}

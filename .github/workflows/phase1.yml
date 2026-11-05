@@ -1,0 +1,46 @@
+name: Phase 1 foundation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: outputs/nexus-erp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: outputs/nexus-erp/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: docker compose up -d --wait postgres redis
+      - run: pnpm db:generate
+        env:
+          MIGRATION_DATABASE_URL: postgresql://nexus_migrator:nexus_migrator_ci_only@localhost:5432/nexus_erp?schema=public
+      - run: pnpm typecheck
+        env:
+          DATABASE_URL: postgresql://nexus_app:nexus_app_ci_only@localhost:5432/nexus_erp?schema=public
+      - run: pnpm --filter @nexus/api test
+      - run: pnpm db:deploy
+        env:
+          MIGRATION_DATABASE_URL: postgresql://nexus_migrator:nexus_migrator_ci_only@localhost:5432/nexus_erp?schema=public
+      - run: pnpm db:seed
+        env:
+          DATABASE_URL: postgresql://nexus_app:nexus_app_ci_only@localhost:5432/nexus_erp?schema=public
+          DEMO_USER_EMAIL: owner@nexus.local
+          DEMO_USER_PASSWORD: TestOnly-CI-Password-782!
+      - run: pnpm --filter @nexus/api test:integration
+        env:
+          DATABASE_URL: postgresql://nexus_app:nexus_app_ci_only@localhost:5432/nexus_erp?schema=public
+      - run: pnpm build
+        env:
+          DATABASE_URL: postgresql://nexus_app:nexus_app_ci_only@localhost:5432/nexus_erp?schema=public

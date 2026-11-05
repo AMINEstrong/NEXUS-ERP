@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+: "${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD must be configured}"
+: "${POSTGRES_MIGRATOR_PASSWORD:?POSTGRES_MIGRATOR_PASSWORD must be configured}"
+
+psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+  --set=ON_ERROR_STOP=1 \
+  --set=database_name="$POSTGRES_DB" \
+  --set=app_password="$POSTGRES_APP_PASSWORD" \
+  --set=migrator_password="$POSTGRES_MIGRATOR_PASSWORD" <<'SQL'
+CREATE ROLE nexus_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD :'app_password';
+CREATE ROLE nexus_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD :'migrator_password';
+GRANT CONNECT ON DATABASE :"database_name" TO nexus_app, nexus_migrator;
+GRANT USAGE ON SCHEMA public TO nexus_app;
+GRANT USAGE, CREATE ON SCHEMA public TO nexus_migrator;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexus_migrator IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO nexus_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE nexus_migrator IN SCHEMA public
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO nexus_app;
+SQL
