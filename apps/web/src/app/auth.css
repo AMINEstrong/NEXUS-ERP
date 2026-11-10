@@ -1,0 +1,11 @@
+.auth-topline-tools{display:flex;align-items:center;gap:12px}
+.auth-topline-tools>span{font-size:9px;letter-spacing:.16em;font-weight:700;color:#8895a3}
+.auth-locale select{height:30px;border-color:#dce4eb;background:#fff;color:#314256;font-size:9px}
+.auth-page[dir="rtl"] .auth-topline{flex-direction:row-reverse}
+.auth-page[dir="rtl"] .auth-card{text-align:right}
+.auth-page[dir="rtl"] .auth-field input{direction:rtl}
+.auth-page[dir="rtl"] .auth-field input[type="email"]{direction:ltr}
+.auth-page[dir="rtl"] .auth-submit span[aria-hidden="true"]{transform:scaleX(-1)}
+@media(max-width:600px){
+  .auth-topline-tools>span{display:none}
+}

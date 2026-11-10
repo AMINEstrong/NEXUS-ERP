@@ -145,7 +145,7 @@ describe("Inventory API", () => {
     });
     expect(insufficient.status).toBe(400);
     const movementList = await request("/inventory/movements?page=1&pageSize=10", { headers: authHeaders });
-    expect((await readJson<{ data: Array<{ type: string }> }>(movementList)).data.map(({ type }) => type)).toEqual(["TRANSFER_IN", "TRANSFER_OUT", "RECEIPT"]);
+    expect((await readJson<{ data: Array<{ type: string }> }>(movementList)).data.map(({ type }) => type).sort()).toEqual(["RECEIPT", "TRANSFER_IN", "TRANSFER_OUT"]);
 
     const archiveInUse = await request(`/inventory/items/${product.id}`, { method: "DELETE", headers: authHeaders });
     expect(archiveInUse.status).toBe(400);

@@ -1,4 +1,4 @@
-import { RolesView } from "../views";
+import { RolesView } from "./view";
 
 export default function RolesPage() {
   return <RolesView />;

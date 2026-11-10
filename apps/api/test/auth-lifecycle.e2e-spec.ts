@@ -133,15 +133,16 @@ describe("Account and company onboarding API", () => {
       body: JSON.stringify({ key: `phase2_${suffix.replaceAll("-", "").slice(0, 12)}`, name: "Lifecycle Auditor", description: "Created by the account lifecycle integration test", permissionKeys: ["company.read"] }),
     });
     expect(customRole.status).toBe(201);
-    const createdRole = await readJson<{ id: string; permissions: string[] }>(customRole);
-    expect(createdRole.permissions).toContain("company.read");
+    const createdRole = await readJson<{ id: string; permissions: Array<{ key: string }> }>(customRole);
+    expect(createdRole.permissions.map(({ key }) => key)).toContain("company.read");
     const permissionUpdate = await request(`/roles/${createdRole.id}/permissions`, {
-      method: "PATCH",
+      method: "PUT",
       headers: authHeaders,
       body: JSON.stringify({ permissionKeys: ["company.read", "company.update"] }),
     });
     expect(permissionUpdate.status).toBe(200);
-    expect((await readJson<{ permissions: string[] }>(permissionUpdate)).permissions).toEqual(["company.read", "company.update"]);
+    const updatedRole = await readJson<{ permissions: Array<{ key: string }> }>(permissionUpdate);
+    expect(updatedRole.permissions.map(({ key }) => key).sort()).toEqual(["company.read", "company.update"]);
 
     const members = await request("/memberships", { headers: authHeaders });
     expect(members.status).toBe(200);

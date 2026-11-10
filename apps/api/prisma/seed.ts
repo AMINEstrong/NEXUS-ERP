@@ -130,10 +130,15 @@ async function seed() {
       }
 
       const ownerRoleId = savedRoles.get("company_owner")!;
-      await tx.membership.upsert({
+      const membership = await tx.membership.upsert({
         where: { companyId_userId: { companyId: company.id, userId: user.id } },
         update: { roleId: ownerRoleId, status: "ACTIVE", joinedAt: new Date() },
         create: { companyId: company.id, userId: user.id, roleId: ownerRoleId, status: "ACTIVE", joinedAt: new Date() },
+      });
+      await tx.membershipRole.upsert({
+        where: { membershipId_roleId: { membershipId: membership.id, roleId: ownerRoleId } },
+        update: {},
+        create: { companyId: company.id, membershipId: membership.id, roleId: ownerRoleId, assignedByUserId: user.id },
       });
 
       await tx.subscription.upsert({

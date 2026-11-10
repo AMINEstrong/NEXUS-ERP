@@ -7,6 +7,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-nexus_erp}
       POSTGRES_USER: ${POSTGRES_USER:-nexus_bootstrap}
+      # Local development fallbacks only. A production deployment must set
+      # distinct secrets; the API refuses to boot in production when its
+      # DATABASE_URL still uses a *_dev_only password.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bootstrap_dev_only}
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-nexus_app_dev_only}
       POSTGRES_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-nexus_migrator_dev_only}
@@ -44,11 +47,14 @@ services:
     environment:
       NODE_ENV: production
       API_PORT: 4000
-      WEB_ORIGIN: http://localhost:3000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       DATABASE_URL: postgresql://nexus_app:${POSTGRES_APP_PASSWORD:-nexus_app_dev_only}@postgres:5432/${POSTGRES_DB:-nexus_erp}?schema=public
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-nexus.sid}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Production sessions must be Secure. The API fails fast when this is
+      # false or when WEB_ORIGIN is not HTTPS while NODE_ENV=production.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:
       - "127.0.0.1:${API_PORT:-4000}:4000"
     depends_on:

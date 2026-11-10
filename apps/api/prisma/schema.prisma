@@ -120,6 +120,8 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   inventoryMovements      InventoryMovement[]      @relation("InventoryMovementActor")
+  assignedMembershipRoles MembershipRole[]         @relation("MembershipRoleAssigner")
+  locale                  String                   @default("en") @db.VarChar(12)
 
   @@map("users")
 }
@@ -184,6 +186,7 @@ model Company {
   deletedAt            DateTime?           @map("deleted_at") @db.Timestamptz(6)
   memberships          Membership[]
   roles                Role[]
+  membershipRoles      MembershipRole[]
   subscriptions        Subscription[]
   auditEvents          AuditLog[]
   activeSessions       Session[]           @relation("ActiveCompanySessions")
@@ -221,8 +224,10 @@ model Membership {
   company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   role      Role             @relation(fields: [roleId, companyId], references: [id, companyId], onDelete: Restrict)
+  roleLinks MembershipRole[]
 
   @@unique([companyId, userId])
+  @@unique([id, companyId])
   @@index([userId, status])
   @@index([companyId, status])
   @@map("memberships")
@@ -240,6 +245,7 @@ model Role {
   company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   permissions RolePermission[]
   memberships Membership[]
+  membershipLinks MembershipRole[]
 
   @@unique([companyId, key])
   @@unique([id, companyId])
@@ -272,6 +278,24 @@ model RolePermission {
   @@unique([roleId, permissionId])
   @@index([companyId])
   @@map("role_permissions")
+}
+
+model MembershipRole {
+  id               String     @id @default(uuid()) @db.Uuid
+  companyId        String     @map("company_id") @db.Uuid
+  membershipId     String     @map("membership_id") @db.Uuid
+  roleId           String     @map("role_id") @db.Uuid
+  assignedByUserId String?    @map("assigned_by_user_id") @db.Uuid
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  company          Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  membership       Membership @relation(fields: [membershipId, companyId], references: [id, companyId], onDelete: Cascade)
+  role             Role       @relation(fields: [roleId, companyId], references: [id, companyId], onDelete: Cascade)
+  assignedBy       User?      @relation("MembershipRoleAssigner", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([membershipId, roleId])
+  @@index([companyId])
+  @@index([roleId])
+  @@map("membership_roles")
 }
 
 model Plan {

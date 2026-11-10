@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Unauthor
 import { Reflector } from "@nestjs/core";
 import { TenantContextService } from "../database/tenant-context.service.js";
 import { REQUIRED_PERMISSIONS } from "./require-permissions.decorator.js";
+import { resolveEffectiveAccess } from "./effective-permissions.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
 
 @Injectable()
@@ -17,15 +18,14 @@ export class PermissionGuard implements CanActivate {
     const companyId = request.auth.activeCompanyId;
     if (!companyId) throw new ForbiddenException("Select an active company to continue");
 
-    const granted = await this.tenants.run(request.auth.userId, companyId, (tx, membership) =>
-      tx.rolePermission.findMany({
-        where: { companyId: membership.companyId, roleId: membership.roleId },
-        select: { permission: { select: { key: true } } },
-      }),
-    );
-    const keys = new Set(granted.map(({ permission }) => permission.key));
+    if (!request.auth.effectivePermissions) {
+      const access = await this.tenants.run(request.auth.userId, companyId, (tx, membership) => resolveEffectiveAccess(tx, membership));
+      request.auth.effectivePermissions = access.permissionKeys;
+    }
+
+    const keys = new Set(request.auth.effectivePermissions);
     if (!required.every((permission) => keys.has(permission))) {
-      throw new ForbiddenException("The active role does not allow this action");
+      throw new ForbiddenException("Your effective roles do not allow this action");
     }
     return true;
   }

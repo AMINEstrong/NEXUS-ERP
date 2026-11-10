@@ -1,13 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Res, UseGuards } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ApiCookieAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import type { Request, Response } from "express";
 import { AuthGuard } from "./auth.guard.js";
 import { AuthService } from "./auth.service.js";
-import { PasswordResetConfirmDto, PasswordResetRequestDto, SelectCompanyDto, VerifyEmailDto } from "./token.dto.js";
+import {
+  PasswordResetConfirmDto,
+  PasswordResetRequestDto,
+  ResendVerificationDto,
+  SelectCompanyDto,
+  VerifyEmailDto,
+} from "./token.dto.js";
 import { LoginDto } from "./login.dto.js";
 import { RegisterDto } from "./register.dto.js";
+import { UpdateLocaleDto } from "../roles/role.dto.js";
 import type { AuthenticatedRequest } from "./auth.types.js";
 
 @ApiTags("authentication")
@@ -20,7 +27,11 @@ export class AuthController {
   }
 
   private get cookieOptions() {
-    const secure = this.config.get<string>("COOKIE_SECURE", "false") === "true";
+    // Defence in depth: environment validation already refuses to boot a
+    // production API without COOKIE_SECURE=true, but never issue an insecure
+    // session cookie in production even if that validation is bypassed.
+    const isProduction = this.config.get<string>("NODE_ENV") === "production";
+    const secure = isProduction || this.config.get<string>("COOKIE_SECURE", "false") === "true";
     const ttl = this.config.get<number>("SESSION_TTL_HOURS", 12) * 60 * 60 * 1000;
     return { httpOnly: true, secure, sameSite: "lax" as const, path: "/", maxAge: ttl };
   }
@@ -48,6 +59,13 @@ export class AuthController {
     return this.auth.verifyEmail(body.token);
   }
 
+  @Post("verification/resend")
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Send another verification link without revealing whether the account exists" })
+  resendVerification(@Body() body: ResendVerificationDto) {
+    return this.auth.resendVerification(body.email);
+  }
+
   @Post("password-reset/request")
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: "Request a one-time password reset link" })
@@ -68,6 +86,14 @@ export class AuthController {
   @ApiOperation({ summary: "Get the signed-in user and company memberships" })
   me(@Req() request: AuthenticatedRequest) {
     return this.auth.currentUser(request.auth!.userId, request.auth!.activeCompanyId);
+  }
+
+  @Patch("me/locale")
+  @UseGuards(AuthGuard)
+  @ApiCookieAuth(process.env.SESSION_COOKIE_NAME ?? "nexus.sid")
+  @ApiOperation({ summary: "Persist the signed-in user's interface language" })
+  updateLocale(@Body() body: UpdateLocaleDto, @Req() request: AuthenticatedRequest) {
+    return this.auth.updateLocale(request.auth!.userId, body.locale);
   }
 
   @Post("active-company")

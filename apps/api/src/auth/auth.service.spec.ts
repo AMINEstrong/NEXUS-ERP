@@ -10,10 +10,12 @@ describe("AuthService", () => {
   let prisma: {
     user: { findFirst: AsyncMock };
     session: { create: AsyncMock; findFirst: AsyncMock; update: AsyncMock; updateMany: AsyncMock };
+    passwordResetToken: { create: AsyncMock };
     withUserContext: AsyncMock;
     $transaction: AsyncMock;
   };
   let config: { get: jest.Mock };
+  let email: { send: AsyncMock };
   let service: AuthService;
 
   beforeEach(() => {
@@ -26,10 +28,12 @@ describe("AuthService", () => {
         updateMany: jest.fn<(...args: any[]) => Promise<any>>(),
       },
       withUserContext: jest.fn<(...args: any[]) => Promise<any[]>>().mockResolvedValue([]),
+      passwordResetToken: { create: jest.fn<(...args: any[]) => Promise<any>>() },
       $transaction: jest.fn<(...args: any[]) => Promise<any>>(),
     };
     config = { get: jest.fn((_key: string, fallback: unknown) => fallback) };
-    service = new AuthService(prisma as never, config as unknown as ConfigService);
+    email = { send: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue(undefined) };
+    service = new AuthService(prisma as never, config as unknown as ConfigService, email as never);
   });
 
   it("creates an expiring session and stores only its SHA-256 token hash", async () => {
@@ -71,6 +75,7 @@ describe("AuthService", () => {
       permission: { upsert: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "permission-id" }) },
       rolePermission: { createMany: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ count: 77 }) },
       membership: { create: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "membership-id" }) },
+      membershipRole: { create: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "membership-role-id" }) },
       plan: { upsert: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "plan-id" }) },
       subscription: { create: jest.fn<(...args: any[]) => Promise<any>>() },
       auditLog: { create: jest.fn<(...args: any[]) => Promise<any>>() },
@@ -100,6 +105,13 @@ describe("AuthService", () => {
     expect(tx.membership.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ userId: "user-id", roleId: "role-id", status: "ACTIVE" }) }));
     expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: "company.registered", entityId: "company-id" }) }));
     expect(prisma.session.create).not.toHaveBeenCalled();
+    expect(email.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner@example.test",
+        template: "email-verification",
+        subject: "Vérifiez votre adresse e-mail NEXUS ERP",
+      }),
+    );
   });
 
   it("consumes a valid email verification token once", async () => {
@@ -116,6 +128,172 @@ describe("AuthService", () => {
     await expect(service.verifyEmail(token)).resolves.toEqual({ status: "email_verified" });
     expect(tx.emailVerificationToken.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { tokenHash: createHash("sha256").update(token).digest("hex"), usedAt: null, expiresAt: { gt: expect.any(Date) } } }));
     expect(tx.user.update).toHaveBeenCalledWith({ where: { id: "user-id" }, data: { emailVerifiedAt: expect.any(Date) } });
+  });
+
+  it("rejects an expired or unknown verification token", async () => {
+    const tx = {
+      emailVerificationToken: {
+        findFirst: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue(null),
+        updateMany: jest.fn<(...args: any[]) => Promise<any>>(),
+      },
+      user: { update: jest.fn<(...args: any[]) => Promise<any>>() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<any>) => callback(tx));
+
+    await expect(service.verifyEmail("an-expired-or-unknown-verification-token")).rejects.toThrow(
+      "This verification link is invalid or expired",
+    );
+    expect(tx.emailVerificationToken.updateMany).not.toHaveBeenCalled();
+    expect(tx.user.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of a consumed verification token", async () => {
+    const tx = {
+      emailVerificationToken: {
+        findFirst: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "verification-id", userId: "user-id" }),
+        updateMany: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ count: 0 }),
+      },
+      user: { update: jest.fn<(...args: any[]) => Promise<any>>() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<any>) => callback(tx));
+
+    await expect(service.verifyEmail("an-already-consumed-verification-token")).rejects.toThrow(
+      "This verification link is invalid or expired",
+    );
+    expect(tx.user.update).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic response without sending mail for an unknown reset request", async () => {
+    prisma.user.findFirst.mockResolvedValue(null);
+
+    await expect(service.requestPasswordReset("unknown@example.test")).resolves.toEqual({ status: "if_account_exists" });
+    expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it("sends a localized one-time password reset link and stores only its hash", async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: "user-id",
+      email: "owner@example.test",
+      name: "Owner",
+      locale: "ar-MA",
+    });
+    prisma.passwordResetToken.create = jest.fn<(...args: any[]) => Promise<any>>();
+
+    const result = await service.requestPasswordReset(" OWNER@Example.Test ");
+    const resetUrl = new URL(result.developmentResetUrl!);
+    const token = resetUrl.searchParams.get("token")!;
+    const storedHash = (prisma.passwordResetToken.create as AsyncMock).mock.calls[0][0].data.tokenHash as string;
+
+    expect(prisma.user.findFirst).toHaveBeenCalledWith({
+      where: { email: "owner@example.test", deletedAt: null, emailVerifiedAt: { not: null } },
+      select: { id: true, email: true, name: true, locale: true },
+    });
+    expect(resetUrl.pathname).toBe("/reset-password");
+    expect(storedHash).toBe(createHash("sha256").update(token).digest("hex"));
+    expect(storedHash).not.toBe(token);
+    expect(email.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner@example.test",
+        template: "password-reset",
+        subject: "إعادة تعيين كلمة المرور في NEXUS ERP",
+      }),
+    );
+  });
+
+  it("still returns the generic reset response when the provider fails", async () => {
+    prisma.user.findFirst.mockResolvedValue({ id: "user-id", email: "owner@example.test", name: "Owner", locale: "en" });
+    prisma.passwordResetToken.create = jest.fn<(...args: any[]) => Promise<any>>();
+    email.send.mockRejectedValue(new Error("provider unavailable"));
+
+    await expect(service.requestPasswordReset("owner@example.test")).resolves.toMatchObject({ status: "if_account_exists" });
+  });
+
+  it("rejects an expired or unknown password reset token", async () => {
+    const tx = {
+      passwordResetToken: {
+        findFirst: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue(null),
+        updateMany: jest.fn<(...args: any[]) => Promise<any>>(),
+      },
+      user: { update: jest.fn<(...args: any[]) => Promise<any>>() },
+      session: { updateMany: jest.fn<(...args: any[]) => Promise<any>>() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<any>) => callback(tx));
+
+    await expect(service.resetPassword("an-expired-or-unknown-reset-token", password)).rejects.toThrow(
+      "This reset link is invalid or expired",
+    );
+    expect(tx.user.update).not.toHaveBeenCalled();
+    expect(tx.session.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of a consumed password reset token", async () => {
+    const tx = {
+      passwordResetToken: {
+        findFirst: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ id: "reset-id", userId: "user-id" }),
+        updateMany: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ count: 0 }),
+      },
+      user: { update: jest.fn<(...args: any[]) => Promise<any>>() },
+      session: { updateMany: jest.fn<(...args: any[]) => Promise<any>>() },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<any>) => callback(tx));
+
+    await expect(service.resetPassword("an-already-consumed-reset-token", password)).rejects.toThrow(
+      "This reset link is invalid or expired",
+    );
+    expect(tx.user.update).not.toHaveBeenCalled();
+  });
+
+  it("resends verification once, invalidating older tokens, and stays generic for unknown accounts", async () => {
+    const tx = {
+      emailVerificationToken: {
+        updateMany: jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({ count: 0 }),
+        create: jest.fn<(...args: any[]) => Promise<any>>(),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<any>) => callback(tx));
+
+    prisma.user.findFirst.mockResolvedValueOnce(null);
+    await expect(service.resendVerification("unknown@example.test")).resolves.toEqual({ status: "if_account_exists" });
+    expect(email.send).not.toHaveBeenCalled();
+
+    prisma.user.findFirst.mockResolvedValueOnce({
+      id: "user-id",
+      email: "owner@example.test",
+      name: "Owner",
+      locale: "de-DE",
+      emailVerifiedAt: null,
+    });
+    const result = await service.resendVerification("owner@example.test");
+    const token = new URL(result.developmentVerificationUrl!).searchParams.get("token")!;
+
+    expect(tx.emailVerificationToken.updateMany).toHaveBeenCalledWith({
+      where: { userId: "user-id", usedAt: null },
+      data: { usedAt: expect.any(Date) },
+    });
+    expect(tx.emailVerificationToken.create).toHaveBeenCalledWith({
+      data: { userId: "user-id", tokenHash: createHash("sha256").update(token).digest("hex"), expiresAt: expect.any(Date) },
+    });
+    expect(email.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "owner@example.test",
+        template: "email-verification",
+        subject: "Bestätigen Sie Ihre NEXUS ERP-E-Mail-Adresse",
+      }),
+    );
+  });
+
+  it("does not resend verification for an already verified account", async () => {
+    prisma.user.findFirst.mockResolvedValue({
+      id: "user-id",
+      email: "owner@example.test",
+      name: "Owner",
+      locale: "en",
+      emailVerifiedAt: new Date(),
+    });
+
+    await expect(service.resendVerification("owner@example.test")).resolves.toEqual({ status: "if_account_exists" });
+    expect(email.send).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it("rejects a password mismatch and does not create a session", async () => {

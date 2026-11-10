@@ -25,9 +25,9 @@ export class UpdateCompanyDto {
   @Matches(/^[A-Za-z]{3}$/)
   currencyCode?: string;
 
-  @ApiPropertyOptional({ example: "fr-MA", enum: ["en", "fr-MA", "ar-MA"] })
+  @ApiPropertyOptional({ example: "fr-MA", enum: ["en", "fr-MA", "ar-MA", "de-DE"] })
   @IsOptional()
-  @IsIn(["en", "fr-MA", "ar-MA"])
+  @IsIn(["en", "fr-MA", "ar-MA", "de-DE"])
   defaultLocale?: string;
 
   @ApiPropertyOptional({ example: "Africa/Casablanca" })

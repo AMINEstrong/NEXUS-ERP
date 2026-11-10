@@ -5,9 +5,9 @@ export interface CompanyContext {
   roleId: string;
 }
 
-export type SupportedLanguage = "en" | "fr" | "ar";
+export type SupportedLanguage = "en" | "fr" | "ar" | "de";
 export type SupportedLocale = SupportedLanguage | `${SupportedLanguage}-${string}`;
 
 export const DEFAULT_CURRENCY = "MAD" as const;
-export const SUPPORTED_LANGUAGES: readonly SupportedLanguage[] = ["en", "fr", "ar"];
+export const SUPPORTED_LANGUAGES: readonly SupportedLanguage[] = ["en", "fr", "ar", "de"];
 export const DEFAULT_LOCALE: SupportedLocale = "fr-MA";

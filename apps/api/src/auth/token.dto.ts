@@ -16,6 +16,13 @@ export class PasswordResetRequestDto {
   email!: string;
 }
 
+export class ResendVerificationDto {
+  @ApiProperty({ example: "owner@company.example" })
+  @IsEmail()
+  @MaxLength(320)
+  email!: string;
+}
+
 export class PasswordResetConfirmDto {
   @ApiProperty({ minLength: 20 })
   @IsString()

@@ -43,9 +43,9 @@ pnpm dev:api
 pnpm dev:web
 ```
 
-- Web: [http://localhost:3000](http://localhost:3000)
-- API readiness: [http://localhost:4000/api/v1/health](http://localhost:4000/api/v1/health)
-- OpenAPI UI: [http://localhost:4000/api/docs](http://localhost:4000/api/docs)
+- Web: [http://localhost:3001](http://localhost:3001)
+- API readiness: [http://localhost:4001/api/v1/health](http://localhost:4001/api/v1/health)
+- OpenAPI UI: [http://localhost:4001/api/docs](http://localhost:4001/api/docs)
 
 The browser sign-in, registration, email verification, password-reset, company-switching and session-revocation flows use the NestJS API. `POST /api/v1/auth/register` creates the user, owner role, permissions, company, trial subscription, audit event and hashed email-verification token transactionally. Local development responses include a verification/reset link because no email provider is configured. `GET /api/v1/auth/me` returns only active memberships and their company details. `POST /api/v1/auth/active-company` verifies membership before storing the selected company on that browser session. `GET /api/v1/companies` and `POST /api/v1/companies` list and create workspaces for the signed-in user.
 

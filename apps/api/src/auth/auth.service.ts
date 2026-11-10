@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -10,6 +11,9 @@ import * as argon2 from "argon2";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Prisma } from "../../generated/prisma/client.js";
 import { PrismaService } from "../database/prisma.service.js";
+import { resolveEffectiveAccess } from "../authorization/effective-permissions.js";
+import { EmailService } from "../email/email.service.js";
+import { buildPasswordResetEmail, buildVerificationEmail } from "../email/email.templates.js";
 import type { CreateCompanyDto } from "./create-company.dto.js";
 import type { RegisterDto } from "./register.dto.js";
 
@@ -49,14 +53,20 @@ type PublicCompany = {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService, private readonly config: ConfigService) {}
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly email: EmailService,
+  ) {}
 
   private get ttlHours() {
     return this.config.get<number>("SESSION_TTL_HOURS", 12);
   }
 
   private get webOrigin() {
-    return this.config.get<string>("WEB_ORIGIN", "http://localhost:3000");
+    return this.config.get<string>("WEB_ORIGIN", "http://localhost:3001");
   }
 
   async register(input: RegisterDto) {
@@ -89,6 +99,28 @@ export class AuthService {
       return { user, company };
     });
 
+    const verificationUrl = `${this.webOrigin}/verify-email?token=${encodeURIComponent(rawToken)}`;
+    const verificationEmail = buildVerificationEmail({
+      locale: input.defaultLocale ?? created.company.defaultLocale,
+      recipientName: created.user.name,
+      companyName: created.company.name,
+      verificationUrl,
+      expiresInHours: 24,
+    });
+    try {
+      await this.email.send({
+        to: created.user.email,
+        template: "email-verification",
+        subject: verificationEmail.subject,
+        html: verificationEmail.html,
+        text: verificationEmail.text,
+      });
+    } catch {
+      // The account already exists. Do not fail registration or reveal
+      // provider details; the user can request a new link through resend.
+      this.logger.error(`Verification e-mail could not be delivered for userId=${created.user.id}`);
+    }
+
     const response: {
       user: typeof created.user;
       company: PublicCompany;
@@ -100,7 +132,59 @@ export class AuthService {
       verificationRequired: true,
     };
     if (this.config.get<string>("NODE_ENV", "development") !== "production") {
-      response.developmentVerificationUrl = `${this.webOrigin}/verify-email?token=${encodeURIComponent(rawToken)}`;
+      response.developmentVerificationUrl = verificationUrl;
+    }
+    return response;
+  }
+
+  async resendVerification(emailInput: string) {
+    const email = emailInput.trim().toLowerCase();
+    const response: { status: "if_account_exists"; developmentVerificationUrl?: string } = { status: "if_account_exists" };
+    const user = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+      select: { id: true, email: true, name: true, locale: true, emailVerifiedAt: true },
+    });
+    // Unknown or already verified accounts receive the same generic response
+    // so the endpoint cannot be used for account enumeration.
+    if (!user || user.emailVerifiedAt) return response;
+
+    const rawToken = randomBytes(32).toString("base64url");
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.emailVerificationToken.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: now },
+      });
+      await tx.emailVerificationToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: this.hashToken(rawToken),
+          expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        },
+      });
+    });
+
+    const verificationUrl = `${this.webOrigin}/verify-email?token=${encodeURIComponent(rawToken)}`;
+    const verificationEmail = buildVerificationEmail({
+      locale: user.locale,
+      recipientName: user.name,
+      verificationUrl,
+      expiresInHours: 24,
+    });
+    try {
+      await this.email.send({
+        to: user.email,
+        template: "email-verification",
+        subject: verificationEmail.subject,
+        html: verificationEmail.html,
+        text: verificationEmail.text,
+      });
+    } catch {
+      this.logger.error(`Verification e-mail could not be resent for userId=${user.id}`);
+    }
+
+    if (this.config.get<string>("NODE_ENV", "development") !== "production") {
+      response.developmentVerificationUrl = verificationUrl;
     }
     return response;
   }
@@ -128,8 +212,10 @@ export class AuthService {
   async requestPasswordReset(emailInput: string) {
     const user = await this.prisma.user.findFirst({
       where: { email: emailInput.trim().toLowerCase(), deletedAt: null, emailVerifiedAt: { not: null } },
-      select: { id: true },
+      select: { id: true, email: true, name: true, locale: true },
     });
+    // Unknown, unverified and deleted accounts all receive the same generic
+    // response so this endpoint cannot be used for account enumeration.
     const response: { status: "if_account_exists"; developmentResetUrl?: string } = { status: "if_account_exists" };
     if (!user) return response;
 
@@ -137,8 +223,29 @@ export class AuthService {
     await this.prisma.passwordResetToken.create({
       data: { userId: user.id, tokenHash: this.hashToken(rawToken), expiresAt: new Date(Date.now() + 30 * 60 * 1000) },
     });
+
+    const resetUrl = `${this.webOrigin}/reset-password?token=${encodeURIComponent(rawToken)}`;
+    const resetEmail = buildPasswordResetEmail({
+      locale: user.locale,
+      recipientName: user.name,
+      resetUrl,
+      expiresInMinutes: 30,
+    });
+    try {
+      await this.email.send({
+        to: user.email,
+        template: "password-reset",
+        subject: resetEmail.subject,
+        html: resetEmail.html,
+        text: resetEmail.text,
+      });
+    } catch {
+      // Delivery problems must not reveal whether the account exists.
+      this.logger.error(`Password reset e-mail could not be delivered for userId=${user.id}`);
+    }
+
     if (this.config.get<string>("NODE_ENV", "development") !== "production") {
-      response.developmentResetUrl = `${this.webOrigin}/reset-password?token=${encodeURIComponent(rawToken)}`;
+      response.developmentResetUrl = resetUrl;
     }
     return response;
   }
@@ -208,7 +315,7 @@ export class AuthService {
     return {
       token: rawToken,
       expiresAt,
-      user: { id: user.id, email: user.email, name: user.name, mfaEnabled: user.mfaEnabled },
+      user: { id: user.id, email: user.email, name: user.name, mfaEnabled: user.mfaEnabled, locale: user.locale },
       sessionId: session.id,
       activeCompanyId: session.activeCompanyId,
     };
@@ -243,7 +350,7 @@ export class AuthService {
   async currentUser(userId: string, activeCompanyId: string | null = null) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, deletedAt: null },
-      select: { id: true, email: true, name: true, emailVerifiedAt: true, mfaEnabled: true, createdAt: true },
+      select: { id: true, email: true, name: true, emailVerifiedAt: true, mfaEnabled: true, locale: true, createdAt: true },
     });
     if (!user) throw new UnauthorizedException("Authentication required");
     const memberships = await this.prisma.withUserContext(user.id, (tx) =>
@@ -256,15 +363,26 @@ export class AuthService {
     const companies = await Promise.all(
       memberships.map((membership) =>
         this.prisma.withTenantContext(user.id, membership.companyId, async (tx) => {
-          const [company, role] = await Promise.all([
+          const [company, access] = await Promise.all([
             tx.company.findFirst({
               where: { id: membership.companyId, deletedAt: null },
               select: { id: true, name: true, slug: true, countryCode: true, currencyCode: true, defaultLocale: true, timeZone: true },
             }),
-            tx.role.findFirst({ where: { id: membership.roleId }, select: { key: true, name: true } }),
+            resolveEffectiveAccess(tx, membership),
           ]);
-          if (!company || !role) return null;
-          return { ...company, membershipId: membership.id, role: { key: role.key, name: role.name }, joinedAt: membership.joinedAt };
+          if (!company) return null;
+          const primaryRole = access.roles.find((role) => role.id === membership.roleId) ?? access.roles[0];
+          if (!primaryRole) return null;
+          return {
+            ...company,
+            membershipId: membership.id,
+            role: { key: primaryRole.key, name: primaryRole.name },
+            roles: access.roles,
+            permissions: access.permissionKeys,
+            isOwner: access.isOwner,
+            isAdministrator: access.isAdministrator,
+            joinedAt: membership.joinedAt,
+          };
         }),
       ),
     );
@@ -319,6 +437,15 @@ export class AuthService {
 
   async logout(sessionId: string) {
     await this.prisma.session.updateMany({ where: { id: sessionId, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+
+  async updateLocale(userId: string, locale: string) {
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { locale },
+      select: { id: true, locale: true },
+    });
+    return updated;
   }
 
   hashToken(token: string) {
@@ -378,6 +505,9 @@ export class AuthService {
     });
     const membership = await tx.membership.create({
       data: { companyId: company.id, userId, roleId: role.id, status: "ACTIVE", joinedAt: new Date() },
+    });
+    await tx.membershipRole.create({
+      data: { companyId: company.id, membershipId: membership.id, roleId: role.id, assignedByUserId: userId },
     });
     const plan = await tx.plan.upsert({
       where: { code: FREE_TRIAL_PLAN.code },

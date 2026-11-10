@@ -1,119 +1,157 @@
-import { BadRequestException, ConflictException, Controller, Get, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Body, Req, UseGuards, ForbiddenException } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import { ApiCookieAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
-import { TenantContextService } from "../database/tenant-context.service.js";
 import { AuthGuard } from "../auth/auth.guard.js";
 import { PermissionGuard } from "../authorization/permission.guard.js";
 import { RequirePermissions } from "../authorization/require-permissions.decorator.js";
 import type { AuthenticatedRequest } from "../auth/auth.types.js";
-import { AssignMembershipRoleDto, CreateRoleDto, UpdateRolePermissionsDto } from "./role.dto.js";
+import { RolesService } from "./roles.service.js";
+import {
+  AddRolePermissionDto,
+  AssignMembershipRoleDto,
+  AssignMembershipRolesDto,
+  CreateRoleDto,
+  DuplicateRoleDto,
+  UpdateRoleDto,
+  UpdateRolePermissionsDto,
+} from "./role.dto.js";
 
 @ApiTags("roles and permissions")
 @Controller()
 @UseGuards(AuthGuard, PermissionGuard)
 @ApiCookieAuth(process.env.SESSION_COOKIE_NAME ?? "nexus.sid")
 export class RolesController {
-  constructor(private readonly tenants: TenantContextService) {}
+  constructor(private readonly roles: RolesService) {}
 
   @Get("permissions")
   @RequirePermissions("administration.read")
-  @ApiOperation({ summary: "List permission keys available to company roles" })
+  @ApiOperation({ summary: "List tenant permission keys available to company roles" })
   listPermissions(@Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, (tx) =>
-      tx.permission.findMany({ orderBy: [{ module: "asc" }, { action: "asc" }], select: { key: true, module: true, action: true, description: true } }),
-    );
+    return this.roles.listPermissions(request.auth!.userId, request.auth!.activeCompanyId!);
   }
 
   @Get("roles")
   @RequirePermissions("administration.read")
-  @ApiOperation({ summary: "List roles and their permissions for the active company" })
-  async listRoles(@Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, async (tx, membership) => {
-      const roles = await tx.role.findMany({
-        where: { companyId: membership.companyId },
-        orderBy: { name: "asc" },
-        include: { permissions: { include: { permission: { select: { key: true, module: true, action: true } } } } },
-      });
-      return roles.map(({ permissions, ...role }) => ({ ...role, permissions: permissions.map(({ permission }) => permission) }));
-    });
+  @ApiOperation({ summary: "List roles, permission grants and member counts" })
+  listRoles(@Req() request: AuthenticatedRequest) {
+    return this.roles.listRoles(request.auth!.userId, request.auth!.activeCompanyId!);
+  }
+
+  @Get("roles/:roleId")
+  @RequirePermissions("administration.read")
+  @ApiOperation({ summary: "Read one role with its permissions and member count" })
+  getRole(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Req() request: AuthenticatedRequest) {
+    return this.roles.getRole(request.auth!.userId, request.auth!.activeCompanyId!, roleId);
   }
 
   @Post("roles")
   @RequirePermissions("administration.manage")
-  @ApiOperation({ summary: "Create a custom role from existing company permission keys" })
+  @ApiOperation({ summary: "Create a custom role from tenant permission keys" })
   createRole(@Body() body: CreateRoleDto, @Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, async (tx, membership) => {
-      const existing = await tx.role.findFirst({ where: { companyId: membership.companyId, key: body.key }, select: { id: true } });
-      if (existing) throw new ConflictException("A role with this key already exists in the active company");
-      const permissions = await tx.permission.findMany({ where: { key: { in: body.permissionKeys } }, select: { id: true, key: true } });
-      if (permissions.length !== body.permissionKeys.length) throw new BadRequestException("Every permission key must exist");
-
-      const role = await tx.role.create({
-        data: { companyId: membership.companyId, key: body.key, name: body.name.trim(), description: body.description.trim(), isSystem: false },
-      });
-      await tx.rolePermission.createMany({
-        data: permissions.map(({ id: permissionId }) => ({ companyId: membership.companyId, roleId: role.id, permissionId })),
-      });
-      await tx.auditLog.create({
-        data: { companyId: membership.companyId, actorUserId: request.auth!.userId, action: "role.created", entityType: "Role", entityId: role.id, metadata: { key: role.key, permissionKeys: permissions.map(({ key }) => key) } },
-      });
-      return { ...role, permissions: permissions.map(({ key }) => key) };
-    });
+    return this.roles.createRole(request.auth!.userId, request.auth!.activeCompanyId!, body);
   }
 
+  @Patch("roles/:roleId")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Rename or describe a custom role" })
+  updateRole(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Body() body: UpdateRoleDto, @Req() request: AuthenticatedRequest) {
+    return this.roles.updateRole(request.auth!.userId, request.auth!.activeCompanyId!, roleId, body);
+  }
+
+  @Delete("roles/:roleId")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Delete an unused custom role" })
+  deleteRole(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Req() request: AuthenticatedRequest) {
+    return this.roles.deleteRole(request.auth!.userId, request.auth!.activeCompanyId!, roleId);
+  }
+
+  @Post("roles/:roleId/duplicate")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Duplicate a role and its permission grants into a custom role" })
+  duplicateRole(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Body() body: DuplicateRoleDto, @Req() request: AuthenticatedRequest) {
+    return this.roles.duplicateRole(request.auth!.userId, request.auth!.activeCompanyId!, roleId, body);
+  }
+
+  @Put("roles/:roleId/permissions")
   @Patch("roles/:roleId/permissions")
   @RequirePermissions("administration.manage")
-  @ApiOperation({ summary: "Replace permissions on a custom role in the active company" })
+  @ApiOperation({ summary: "Replace every permission grant on a custom role" })
   replaceRolePermissions(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Body() body: UpdateRolePermissionsDto, @Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, async (tx, membership) => {
-      const role = await tx.role.findFirst({ where: { id: roleId, companyId: membership.companyId } });
-      if (!role) throw new NotFoundException("Role not found in the active company");
-      if (role.isSystem) throw new ForbiddenException("System roles cannot be changed");
-      const permissions = await tx.permission.findMany({ where: { key: { in: body.permissionKeys } }, select: { id: true, key: true } });
-      if (permissions.length !== body.permissionKeys.length) throw new BadRequestException("Every permission key must exist");
-      await tx.rolePermission.deleteMany({ where: { companyId: membership.companyId, roleId: role.id } });
-      if (permissions.length) {
-        await tx.rolePermission.createMany({ data: permissions.map(({ id: permissionId }) => ({ companyId: membership.companyId, roleId: role.id, permissionId })) });
-      }
-      await tx.auditLog.create({
-        data: { companyId: membership.companyId, actorUserId: request.auth!.userId, action: "role.permissions_updated", entityType: "Role", entityId: role.id, metadata: { permissionKeys: permissions.map(({ key }) => key) } },
-      });
-      return { id: role.id, key: role.key, name: role.name, permissions: permissions.map(({ key }) => key) };
-    });
+    return this.roles.replacePermissions(request.auth!.userId, request.auth!.activeCompanyId!, roleId, body.permissionKeys);
+  }
+
+  @Post("roles/:roleId/permissions")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Add one permission to a custom role" })
+  addRolePermission(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Body() body: AddRolePermissionDto, @Req() request: AuthenticatedRequest) {
+    return this.roles.addPermission(request.auth!.userId, request.auth!.activeCompanyId!, roleId, body.permissionKey);
+  }
+
+  @Delete("roles/:roleId/permissions/:permissionKey")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Remove one permission from a custom role" })
+  removeRolePermission(
+    @Param("roleId", new ParseUUIDPipe()) roleId: string,
+    @Param("permissionKey") permissionKey: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.roles.removePermission(request.auth!.userId, request.auth!.activeCompanyId!, roleId, permissionKey);
+  }
+
+  @Get("roles/:roleId/members")
+  @RequirePermissions("administration.read")
+  @ApiOperation({ summary: "List the members who currently hold a role" })
+  listRoleMembers(@Param("roleId", new ParseUUIDPipe()) roleId: string, @Req() request: AuthenticatedRequest) {
+    return this.roles.listRoleMembers(request.auth!.userId, request.auth!.activeCompanyId!, roleId);
   }
 
   @Get("memberships")
   @RequirePermissions("administration.read")
-  @ApiOperation({ summary: "List active and invited memberships for the active company" })
+  @ApiOperation({ summary: "List company memberships with their effective roles and permissions" })
   listMemberships(@Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, (tx, membership) =>
-      tx.membership.findMany({
-        where: { companyId: membership.companyId, status: { in: ["ACTIVE", "INVITED"] } },
-        orderBy: { createdAt: "asc" },
-        select: { id: true, userId: true, roleId: true, status: true, invitedAt: true, joinedAt: true, user: { select: { name: true, email: true } }, role: { select: { key: true, name: true } } },
-      }),
-    );
+    return this.roles.listMemberships(request.auth!.userId, request.auth!.activeCompanyId!);
+  }
+
+  @Put("memberships/:membershipId/roles")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Replace every role assigned to a company member" })
+  assignMembershipRoles(
+    @Param("membershipId", new ParseUUIDPipe()) membershipId: string,
+    @Body() body: AssignMembershipRolesDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.roles.assignMembershipRoles(request.auth!.userId, request.auth!.activeCompanyId!, membershipId, body);
+  }
+
+  @Post("memberships/:membershipId/roles")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Add one role to a company member without removing existing roles" })
+  addMembershipRole(
+    @Param("membershipId", new ParseUUIDPipe()) membershipId: string,
+    @Body() body: AssignMembershipRoleDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.roles.addMembershipRole(request.auth!.userId, request.auth!.activeCompanyId!, membershipId, body.roleId);
+  }
+
+  @Delete("memberships/:membershipId/roles/:roleId")
+  @RequirePermissions("administration.manage")
+  @ApiOperation({ summary: "Remove one role from a company member" })
+  removeMembershipRole(
+    @Param("membershipId", new ParseUUIDPipe()) membershipId: string,
+    @Param("roleId", new ParseUUIDPipe()) roleId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.roles.removeMembershipRole(request.auth!.userId, request.auth!.activeCompanyId!, membershipId, roleId);
   }
 
   @Patch("memberships/:membershipId/role")
   @RequirePermissions("administration.manage")
-  @ApiOperation({ summary: "Assign a role from the active company to one of its memberships" })
-  assignMembershipRole(@Param("membershipId", new ParseUUIDPipe()) membershipId: string, @Body() body: AssignMembershipRoleDto, @Req() request: AuthenticatedRequest) {
-    return this.tenants.run(request.auth!.userId, request.auth!.activeCompanyId!, async (tx, membership) => {
-      const [target, nextRole] = await Promise.all([
-        tx.membership.findFirst({ where: { id: membershipId, companyId: membership.companyId, status: "ACTIVE" }, include: { role: { select: { key: true } } } }),
-        tx.role.findFirst({ where: { id: body.roleId, companyId: membership.companyId }, select: { id: true, key: true, name: true } }),
-      ]);
-      if (!target) throw new NotFoundException("Active membership not found in the active company");
-      if (!nextRole) throw new BadRequestException("The requested role does not belong to the active company");
-      if (target.role.key === "company_owner" && nextRole.key !== "company_owner") {
-        const otherOwners = await tx.membership.count({ where: { companyId: membership.companyId, status: "ACTIVE", role: { key: "company_owner" }, id: { not: target.id } } });
-        if (otherOwners === 0) throw new ForbiddenException("A company must retain at least one active owner");
-      }
-      const updated = await tx.membership.update({ where: { id: target.id }, data: { roleId: nextRole.id }, select: { id: true, userId: true, roleId: true, status: true } });
-      await tx.auditLog.create({
-        data: { companyId: membership.companyId, actorUserId: request.auth!.userId, action: "membership.role_assigned", entityType: "Membership", entityId: target.id, metadata: { previousRole: target.role.key, nextRole: nextRole.key } },
-      });
-      return { ...updated, role: nextRole };
-    });
+  @ApiOperation({ summary: "Legacy single-role assignment; replaces the member's role set" })
+  assignMembershipRole(
+    @Param("membershipId", new ParseUUIDPipe()) membershipId: string,
+    @Body() body: AssignMembershipRoleDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.roles.assignLegacyMembershipRole(request.auth!.userId, request.auth!.activeCompanyId!, membershipId, body.roleId);
   }
 }
